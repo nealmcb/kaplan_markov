@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """ kaplan_markov.py
-This file contains some code relevant to kaplan-markov risk-limiting batch comparison audits
-See A Kaplan-Markov auditing example using 2008 California data
-Mark Lindeman, 1/10/2010 (v. 1.2x, 3/1/2010)
+This file contains some code relevant to Kaplan-Markov Risk-Limiting Batch Comparison Audits
+
+For the formulas and a worked example, see
+ A Kaplan-Markov auditing example using 2008 California data
+ Mark Lindeman, 1/10/2010 (v. 1.2x, 3/1/2010)
  https://d56fe2f5-a-62cb3a1a-s-sites.googlegroups.com/site/electionaudits/small-batch/kaplan-example-12x.pdf
-for formulas and a worked example.
-The code below taken from /srv/s/electionaudits/master/electionaudits/models.py
-provides some code snippets which might be helpful in coding that up in Python
+
+The example works with batch data from 2008 election in California’s 3rd Congressional District (CD3), in
+the file ca-cd3-2018-batches.csv
+
+The product of the final column (overall K-M P value) from the bottom of page six is 0.098616.
+
+This is a subset of the full set of batches, from California's Statewide Database (SWDB).
+To fully replicate the calculations, we'd need that whole dataset.
 """
 
 import csv
@@ -14,69 +21,70 @@ import csv_to_objects
 import logging
 import types
 
-"""
-contest
-    u
-    U
-    choices
-    min_margin
-"""
-
-# First figure out the minumum margin of all pairs of winners and losers for this contest
+# A quick-and-dirty Contest class instance, hardcoded from Lindeman example.
 
 c = types.SimpleNamespace()
 
-# Hardcode from Lindeman example
+# First need to figure out the minumum margin of all pairs of winners and losers for this contest
 c.min_margin = 17453
+
+# To calculate U, we need all the batches, not just the selected batches.
+# Take this approximate value from the Lindeman paper
 c.U = 20.47
+
 c.choices = 'Lungren,Durston,Tuma,Padilla'.split(',')
 c.winner = 'Lungren'
 
+
 def taintfactor(contest, discrepancy, u):
-    "Taint for a given discrepancy and u in given contest"
+    """Return the taint factor for a given discrepancy and u in given contest
+    TODO: add doctest.
+    """
 
     taint = discrepancy / c.min_margin / u
     return (1.0 - (1.0 / c.U)) / (1.0 - taint)
 
-print(f'taintfactor = {taintfactor(c, 231-230, 0.1)}')
 
-# data.csv:
-# Data from https://d56fe2f5-a-62cb3a1a-s-sites.googlegroups.com/site/electionaudits/small-batch/kaplan-example-12x.pdf
-#  crude extraction in emacs: check for errors....
-#  Subset of full set of batches, from california data
-#  Product of final column = overall K-M P value: 0.098616 
+def main():
+    reader = csv.DictReader(open('ca-cd3-2018-batches.csv'), delimiter=',')
 
-reader = csv.DictReader(open('data.csv'), delimiter=',')
+    selected = csv_to_objects.read_rows(reader)
 
-selected = csv_to_objects.read_rows(reader)
+    losers = 'Durston,Tuma,Padilla'.split(',')
 
-losers = 'Durston,Tuma,Padilla'.split(',')
+    km_p_value = 1.0
 
-km_p_value = 1.0
+    for row in selected:
+        for attr in 'ballots_cast,Lungren,Durston,Tuma,Padilla,times_drawn,audit_Lungren,audit_Durston,audit_Tuma,audit_Padilla'.split(','):
+            setattr(row, attr, int(getattr(row, attr)))
+        for attr in 'e_Durston,e_Tuma,e_Padilla,taint,KM_factor,net_KM_factor'.split(','):
+            setattr(row, attr, float(getattr(row, attr)))
 
-for row in selected:
-    for attr in 'ballots_cast,Lungren,Durston,Tuma,Padilla,times_drawn,audit_Lungren,audit_Durston,audit_Tuma,audit_Padilla'.split(','):
-        setattr(row, attr, int(getattr(row, attr)))
-    for attr in 'e_Durston,e_Tuma,e_Padilla,taint,KM_factor,net_KM_factor'.split(','):
-        setattr(row, attr, float(getattr(row, attr)))
+        logging.debug("%s", row)
+        #print(row)
 
-    logging.debug("%s", row)
-    #print(row)
+        w_p = getattr(row, 'Lungren')
+        max_delta_in_batch = min(w_p - getattr(row, loser) for loser in losers)
+        u = row.ballots_cast + row.Lungren - row.Durston / c.min_margin
+        d = row.Lungren - row.Durston - (row.audit_Lungren - row.audit_Durston)
+        taint = taintfactor(c, d, u)
+        net_taint = taint ** row.times_drawn
 
-    w_p = getattr(row, 'Lungren')
-    max_delta_in_batch = min(w_p - getattr(row, loser) for loser in losers)
-    u = row.ballots_cast + row.Lungren - row.Durston / c.min_margin
-    d = row.Lungren - row.Durston - (row.audit_Lungren - row.audit_Durston)
-    taint = taintfactor(c, d, u)
-    net_taint = taint ** row.times_drawn
+        km_p_value *= net_taint
 
-    km_p_value *= net_taint
+        print(f'{net_taint}, {row.precinct}, {d}, {row.taint}, {taint}, {w_p}, {max_delta_in_batch}')
 
-    print(f'{net_taint}, {row.precinct}, {d}, {row.taint}, {taint}, {w_p}, {max_delta_in_batch}')
+        # print(f'{row.precinct},{row.Lungren},{row.KM_factor*2}')
 
-    # print(f'{row.precinct},{row.Lungren},{row.KM_factor*2}')
+    print(f'Overall km_p_value: {km_p_value}')
 
-print(f'Overall km_p_value: {km_p_value}')
+
+if __name__ == "__main__":
+    main()
+
+
+# The code below is taken from /srv/s/electionaudits/master/electionaudits/models.py
+# and provides some more code snippets which might be helpful in fleshing this code out.
 
 if False:
 # from class Contest(models.Model):
@@ -115,7 +123,6 @@ if False:
     u = models.FloatField(blank=True, null=True,
                     help_text="Maximum miscount / total apparent margin." )
 
-#...
 
     def error_bounds(self):
         """Calculate winners, losers, overall Margin between each pair of them in this contest,
@@ -170,7 +177,3 @@ if False:
                 'losers': losers,
                 'margins': margins,
                 }
-
-
-#...
-
