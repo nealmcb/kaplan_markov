@@ -14,26 +14,38 @@ The product of the final column (overall K-M P value) from the bottom of page si
 
 This is a subset of the full set of batches, from California's Statewide Database (SWDB).
 To fully replicate the calculations, we'd need that whole dataset.
+
+FIXME: calculations of taint are off when multiple discrepancies are there
 """
 
 import csv
-import csv_to_objects
 import logging
 import types
+from dataclasses import dataclass
+from dataclass_csv import DataclassReader
 
-# A quick-and-dirty Contest class instance, hardcoded from Lindeman example.
 
-c = types.SimpleNamespace()
+@dataclass
+class ContestBatch():
+    "Class to represent rows in ca-cd3-2018-batches.csv"
 
-# First need to figure out the minumum margin of all pairs of winners and losers for this contest
-c.min_margin = 17453
-
-# To calculate U, we need all the batches, not just the selected batches.
-# Take this approximate value from the Lindeman paper
-c.U = 20.47
-
-c.choices = 'Lungren,Durston,Tuma,Padilla'.split(',')
-c.winner = 'Lungren'
+    precinct: str
+    ballots_cast: int
+    Lungren: int
+    Durston: int
+    Tuma: int
+    Padilla: int
+    times_drawn: int
+    audit_Lungren: int
+    audit_Durston: int
+    audit_Tuma: int
+    audit_Padilla: int
+    e_Durston: float
+    e_Tuma: float
+    e_Padilla: float
+    taint: float
+    KM_factor: float
+    net_KM_factor: float
 
 
 def taintfactor(contest, discrepancy, u):
@@ -41,27 +53,34 @@ def taintfactor(contest, discrepancy, u):
     TODO: add doctest.
     """
 
-    taint = discrepancy / c.min_margin / u
-    return (1.0 - (1.0 / c.U)) / (1.0 - taint)
+    taint = discrepancy / contest.min_margin / u
+    return (1.0 - (1.0 / contest.U)) / (1.0 - taint)
 
 
 def main():
-    reader = csv.DictReader(open('ca-cd3-2018-batches.csv'), delimiter=',')
+    # A quick-and-dirty Contest class instance, hardcoded from Lindeman example.
 
-    selected = csv_to_objects.read_rows(reader)
+    c = types.SimpleNamespace()
+
+    # First need to figure out the minumum margin of all pairs of winners and losers for this contest
+    c.min_margin = 17453
+
+    # To calculate U, we need all the batches, not just the selected batches.
+    # Take this approximate value from the Lindeman paper
+    # [May be 20.47011975018621 based on all 774 audit units]
+    c.U = 20.47
+
+    c.choices = 'Lungren,Durston,Tuma,Padilla'.split(',')
+    c.winner = 'Lungren'
 
     losers = 'Durston,Tuma,Padilla'.split(',')
 
+    reader = DataclassReader(open('ca-cd3-2018-batches.csv'), ContestBatch, delimiter=',')
+
     km_p_value = 1.0
 
-    for row in selected:
-        for attr in 'ballots_cast,Lungren,Durston,Tuma,Padilla,times_drawn,audit_Lungren,audit_Durston,audit_Tuma,audit_Padilla'.split(','):
-            setattr(row, attr, int(getattr(row, attr)))
-        for attr in 'e_Durston,e_Tuma,e_Padilla,taint,KM_factor,net_KM_factor'.split(','):
-            setattr(row, attr, float(getattr(row, attr)))
-
+    for row in reader:
         logging.debug("%s", row)
-        #print(row)
 
         w_p = getattr(row, 'Lungren')
         max_delta_in_batch = min(w_p - getattr(row, loser) for loser in losers)
