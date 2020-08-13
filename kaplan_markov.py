@@ -21,6 +21,7 @@ FIXME: calculations of taint are off when multiple discrepancies are there
 import csv
 import logging
 import types
+import copy
 from typing import Dict
 from dataclasses import dataclass
 from dataclass_csv import DataclassReader
@@ -32,9 +33,6 @@ class VoteCounts:
     ballotcount: int
     tally: Dict[str, int]
     # num_winners: int
-
-
-vc = VoteCounts("b1", 100, {"A": 60, "B": 20, "C": 10})
 
 
 @dataclass
@@ -63,13 +61,13 @@ class ContestBatchRow:
 def error_bound(votecounts, winners, margin):
     """Return the error bound u_p for the given VoteCounts
 
-    >>> error_bound(vc, ["invalid candidate"], 2000)
-    Traceback (most recent call last):
-    ValueError: Set of winners '['invalid candidate']' is not subset of candidates in tally: dict_keys(['A', 'B', 'C'])
-
-    Example from top of table in page 3 of Lindemen
+    Example from top of table in page 3 of Lindeman:
     >>> error_bound(VoteCounts("060031A", 139, {"Lundgren": 48, "Durston": 83}), ["Lundgren"], 17453)
     0.005958860940812468
+
+    >>> error_bound(VoteCounts("b1", 100, {"A": 60, "B": 20}), ["Elvis"], 200)
+    Traceback (most recent call last):
+    ValueError: Set of winners '['Elvis']' is not subset of candidates in tally: dict_keys(['A', 'B'])
     """
 
     candidates = set(votecounts.tally)
@@ -87,6 +85,34 @@ def error_bound(votecounts, winners, margin):
         for winner in winners
         for loser in losers
     )
+
+
+def relative_error(reported_votecounts, audit_votecounts, winners, margin):
+    """Return the relative error e_p for the given VoteCounts
+
+    Example from page 4 of Lindeman:
+    >>> relative_error(
+    ...    VoteCounts("0606726420", 424, {"Lundgren": 158, "Durston": 172}),
+    ...    VoteCounts("0606726420", 424, {"Lundgren": 158, "Durston": 182}),
+    ...    ["Lundgren"],
+    ...    17453)
+    0.000572967398155045
+    """
+
+    # Note that we reuse the code in error_bound by inventing a new set
+    # of tallies which are the discrepancies in the reported tallies, and
+    # using a ballotcount of zero.
+
+    discrepancies = {
+        c: reported_votecounts.tally[c] - audit_votecounts.tally[c]
+        for c in reported_votecounts.tally
+    }
+
+    discrepancy_vc = copy.deepcopy(reported_votecounts)
+    discrepancy_vc.tally = discrepancies
+    discrepancy_vc.ballotcount = 0
+
+    return error_bound(discrepancy_vc, winners, margin)
 
 
 def taintfactor(contest, discrepancy, u):
