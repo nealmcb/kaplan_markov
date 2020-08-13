@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.7
 """ kaplan_markov.py
 This file contains some code relevant to Kaplan-Markov Risk-Limiting Batch Comparison Audits
 
@@ -21,12 +21,24 @@ FIXME: calculations of taint are off when multiple discrepancies are there
 import csv
 import logging
 import types
+from typing import Dict
 from dataclasses import dataclass
 from dataclass_csv import DataclassReader
 
 
 @dataclass
-class ContestBatch():
+class VoteCounts():
+    name: str
+    ballotcount: int
+    tally: Dict[str, int]
+    # num_winners: int
+
+
+vc = VoteCounts("b1", 100, {"A": 60, "B": 20, "C": 10})
+
+
+@dataclass
+class ContestBatchRow():
     "Class to represent rows in ca-cd3-2018-batches.csv"
 
     precinct: str
@@ -46,6 +58,30 @@ class ContestBatch():
     taint: float
     KM_factor: float
     net_KM_factor: float
+
+
+def error_bound(votecounts, winners, margin):
+    """Return the error bound u_p for the given VoteCounts
+
+    >>> error_bound(vc, ["invalid candidate"], 2000)
+    Traceback (most recent call last):
+    ValueError: Set of winners '['invalid candidate']' is not subset of candidates in tally: dict_keys(['A', 'B', 'C'])
+
+    Example from top of table in page 3 of Lindemen
+    >>> error_bound(VoteCounts("060031A", 139, {"Lundgren": 48, "Durston": 83}), ["Lundgren"], 17453)
+    0.005958860940812468
+    """
+
+    candidates = set(votecounts.tally)
+
+    if not set(winners).issubset(candidates):
+        raise ValueError(f"Set of winners '{winners}' is not subset of candidates in tally: {votecounts.tally.keys()}")
+
+    losers = candidates - set(winners)
+
+    bp = votecounts.ballotcount
+    return max((bp + votecounts.tally[winner] - votecounts.tally[loser]) / margin for winner in winners for loser in losers)
+        
 
 
 def taintfactor(contest, discrepancy, u):
@@ -75,16 +111,18 @@ def main():
 
     losers = 'Durston,Tuma,Padilla'.split(',')
 
-    reader = DataclassReader(open('ca-cd3-2018-batches.csv'), ContestBatch, delimiter=',')
+    reader = DataclassReader(open('ca-cd3-2018-batches.csv'), ContestBatchRow, delimiter=',')
 
     km_p_value = 1.0
+
+    print(f'net_taint,precinct,net_discrepancy,reported_taint,calculated_taint,w_p,max_delta_in_batch')
 
     for row in reader:
         logging.debug("%s", row)
 
         w_p = getattr(row, 'Lungren')
         max_delta_in_batch = min(w_p - getattr(row, loser) for loser in losers)
-        u = row.ballots_cast + row.Lungren - row.Durston / c.min_margin
+        u = (row.ballots_cast + row.Lungren - row.Durston) / c.min_margin
         d = row.Lungren - row.Durston - (row.audit_Lungren - row.audit_Durston)
         taint = taintfactor(c, d, u)
         net_taint = taint ** row.times_drawn
