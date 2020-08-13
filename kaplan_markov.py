@@ -58,12 +58,18 @@ class ContestBatchRow:
     net_KM_factor: float
 
 
-def error_bound(votecounts, winners, margin):
+def error_bound(votecounts, winners, margin):   # FIXME: needs array of margins per pair....
     """Return the error bound u_p for the given VoteCounts
 
     Example from top of table in page 3 of Lindeman:
     >>> error_bound(VoteCounts("060031A", 139, {"Lundgren": 48, "Durston": 83}), ["Lundgren"], 17453)
     0.005958860940812468
+
+    >>> error_bound(VoteCounts("0606726420", 382, {"Lundgren": 158, "Durston": 172}), ["Lundgren"], 17453)
+    0.021085200252105654
+
+    >>> error_bound(VoteCounts("0606726420", 382, {"Lundgren": 158, "Durston": 172, "Tuma": 14, "Padilla": 15}), ["Lundgren"], 17453)
+    0.021085200252105654 (fails because we need actual margins for each pair)
 
     >>> error_bound(VoteCounts("b1", 100, {"A": 60, "B": 20}), ["Elvis"], 200)
     Traceback (most recent call last):
@@ -87,7 +93,7 @@ def error_bound(votecounts, winners, margin):
     )
 
 
-def relative_error(reported_votecounts, audit_votecounts, winners, margin):
+def relative_error(reported_votecounts, audit_votecounts, winners, margin):   # FIXME: needs array of margins per pair....
     """Return the relative error e_p for the given VoteCounts
 
     Example from page 4 of Lindeman:
@@ -124,7 +130,7 @@ def taintfactor(contest, discrepancy, u):
     return (1.0 - (1.0 / contest.U)) / (1.0 - taint)
 
 
-def main():
+def lindeman_test():
     # A quick-and-dirty Contest class instance, hardcoded from Lindeman example.
 
     c = types.SimpleNamespace()
@@ -137,7 +143,8 @@ def main():
     # [May be 20.47011975018621 based on all 774 audit units]
     c.U = 20.47
 
-    c.choices = "Lungren,Durston,Tuma,Padilla".split(",")
+    c.choices = "Lungren,Durston,Tuma,Padilla".split(",") #  TODO: after fixed to allow more than 2 candidates
+    c.choices = "Lungren,Durston".split(",") # after fixed
     c.winner = "Lungren"
 
     losers = "Durston,Tuma,Padilla".split(",")
@@ -154,6 +161,17 @@ def main():
 
     for row in reader:
         logging.debug("%s", row)
+
+        # reported_tally = {name: row.__dict__[name] for name in c.choices}
+        reported_tally = {name: row.__dict__[name] for name in c.choices}
+        reported_votecounts = VoteCounts(row.precinct, row.ballots_cast, reported_tally)
+        audit_tally = {name: row.__dict__["audit_"+name] for name in c.choices}
+        audit_votecounts = VoteCounts(row.precinct, row.ballots_cast, audit_tally)
+        print(reported_tally, audit_tally)
+
+        up = error_bound(reported_votecounts, [c.winner], c.min_margin)
+        ep = relative_error(reported_votecounts, audit_votecounts, [c.winner], c.min_margin)
+        print(f'up: {up}, ep: {ep}, taint: {ep/up}')
 
         w_p = getattr(row, "Lungren")
         max_delta_in_batch = min(w_p - getattr(row, loser) for loser in losers)
@@ -174,7 +192,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    lindeman_test()
 
 
 # The code below is taken from /srv/s/electionaudits/master/electionaudits/models.py
