@@ -19,6 +19,7 @@ This is a subset of the full set of batches, from California's Statewide Databas
 To fully replicate the calculations, we'd need that whole dataset.
 """
 
+import math
 import csv
 import logging
 import types
@@ -124,6 +125,51 @@ def km_factor(U, taint):
     """
 
     return (1.0 - (1.0 / U)) / (1.0 - taint)
+
+
+def audit_data(
+    batches, name_key, ballotcount_key, choice_keys, winner_keys, adjustment=0
+):
+    """Analyze batches, an iterator of dicts with the given keys,
+    to find the winner and total possible miscount.
+    Add given adjustment to each margin to account for 
+    """
+
+    # Tally contest
+    tally = {}
+    for column in choice_keys + [ballotcount_key]:
+        tally[column] = sum(int(batch[column]) for batch in batches)
+
+    losers = set(choice_keys) - set(winner_keys)
+
+    # Calculate margins
+    margins = {
+        f"{winner}:{loser}": tally[winner] - tally[loser] + adjustment
+        for winner in winner_keys
+        for loser in losers
+    }
+
+    # Confirm winners
+    if any(margin < 0 for margin in margins.values()):
+        raise ValueError(f"Declared winner actually lost: {margins}")
+
+    total_error_bound = 0.0
+
+    for batch in batches:
+        batch_tally = {key: int(batch[key]) for key in choice_keys}
+        vc = VoteCounts(batch[name_key], int(batch[ballotcount_key]), batch_tally)
+        total_error_bound += error_bound(vc, winner_keys, margins)
+
+    return tally, margins, total_error_bound
+
+
+def batch_draws(risk_limit, total_error_bound):
+    """Return the number of batches to be audited assuming no discrepancies
+    Based on Lindeman,at page 2 of
+    https://d56fe2f5-a-62cb3a1a-s-sites.googlegroups.com/site/electionaudits/small-batch/kaplan-example-12x.pdf
+    """
+
+    return math.log(risk_limit) / math.log(1.0 - 1.0 / total_error_bound)
 
 
 # This should go in a test.py file
