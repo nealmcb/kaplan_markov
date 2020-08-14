@@ -10,12 +10,13 @@ For the formulas and a worked example, see
 The example works with batch data from 2008 election in California’s 3rd Congressional District (CD3), in
 the file ca-cd3-2018-batches.csv
 
-The product of the final column (overall K-M P value) from the bottom of page six is 0.098616.
+The product of the final column (overall K-M P value) from the bottom of page six is
+ 0.098616.
+Mine:
+ 0.09827592427176036
 
 This is a subset of the full set of batches, from California's Statewide Database (SWDB).
 To fully replicate the calculations, we'd need that whole dataset.
-
-FIXME: calculations of taint are off when multiple discrepancies are there
 """
 
 import csv
@@ -58,17 +59,18 @@ class ContestBatchRow:
     net_KM_factor: float
 
 
-def error_bound(votecounts, winners, margin):   # FIXME: needs array of margins per pair....
-    """Return the error bound u_p for the given VoteCounts
+# FIXME: needs array of margins per pair....
+def error_bound(votecounts, winners, margins):
+    """Return the error bound u_p for the given VoteCounts and pairwise margins.
 
     Example from top of table in page 3 of Lindeman:
-    >>> error_bound(VoteCounts("060031A", 139, {"Lundgren": 48, "Durston": 83}), ["Lundgren"], 17453)
+    >>> error_bound(VoteCounts("060031A", 139, {"Lungren": 48, "Durston": 83}), ["Lungren"], 17453)
     0.005958860940812468
 
-    >>> error_bound(VoteCounts("0606726420", 382, {"Lundgren": 158, "Durston": 172}), ["Lundgren"], 17453)
+    >>> error_bound(VoteCounts("0606726420", 382, {"Lungren": 158, "Durston": 172}), ["Lungren"], 17453)
     0.021085200252105654
 
-    >>> error_bound(VoteCounts("0606726420", 382, {"Lundgren": 158, "Durston": 172, "Tuma": 14, "Padilla": 15}), ["Lundgren"], 17453)
+    >>> error_bound(VoteCounts("0606726420", 382, {"Lungren": 158, "Durston": 172, "Tuma": 14, "Padilla": 15}), ["Lungren"], 17453)
     0.021085200252105654 (fails because we need actual margins for each pair)
 
     >>> error_bound(VoteCounts("b1", 100, {"A": 60, "B": 20}), ["Elvis"], 200)
@@ -76,6 +78,7 @@ def error_bound(votecounts, winners, margin):   # FIXME: needs array of margins 
     ValueError: Set of winners '['Elvis']' is not subset of candidates in tally: dict_keys(['A', 'B'])
     """
 
+    print(margins)
     candidates = set(votecounts.tally)
 
     if not set(winners).issubset(candidates):
@@ -86,23 +89,40 @@ def error_bound(votecounts, winners, margin):   # FIXME: needs array of margins 
     losers = candidates - set(winners)
 
     bp = votecounts.ballotcount
+
+    # TODO: Perhaps define function of tally and winners/losers which returns all margins labeled by winner/loser
+    #  Then we can calculate all contest-wide margins, margins per batch, take result and calculate u or ep, etc.
+    #  only if we set up dummy margins of 1
+
+    print(f'm {margins}, t {votecounts.tally}')
     return max(
-        (bp + votecounts.tally[winner] - votecounts.tally[loser]) / margin
+        (bp + votecounts.tally[winner] - votecounts.tally[loser]) / margins[f"{winner}:{loser}"]
         for winner in winners
         for loser in losers
     )
 
 
-def relative_error(reported_votecounts, audit_votecounts, winners, margin):   # FIXME: needs array of margins per pair....
+# FIXME: needs array of margins per pair....
+def relative_error(reported_votecounts, audit_votecounts, winners, margins):
     """Return the relative error e_p for the given VoteCounts
 
-    Example from page 4 of Lindeman:
+    FIXME: need max of absolute values?     Can taint sign be reversed?
+
+    Example from page 4 of Lindeman, precinct 0606726420:
     >>> relative_error(
-    ...    VoteCounts("0606726420", 424, {"Lundgren": 158, "Durston": 172}),
-    ...    VoteCounts("0606726420", 424, {"Lundgren": 158, "Durston": 182}),
-    ...    ["Lundgren"],
+    ...    VoteCounts("0606726420", 424, {"Lungren": 158, "Durston": 172}),
+    ...    VoteCounts("0606726420", 424, {"Lungren": 158, "Durston": 182}),
+    ...    ["Lungren"],
     ...    17453)
     0.000572967398155045
+
+    Example from table on page 6 of Lindeman, precinct 06009350
+    >>> relative_error(
+    ...    VoteCounts("06009350", 919, {"Lungren": 440, "Durston": 392}),
+    ...    VoteCounts("06009350", 919, {"Lungren": 442, "Durston": 393}),
+    ...    ["Lungren"],
+    ...    17453)
+    -5.72967398155045e-05
     """
 
     # Note that we reuse the code in error_bound by inventing a new set
@@ -118,15 +138,15 @@ def relative_error(reported_votecounts, audit_votecounts, winners, margin):   # 
     discrepancy_vc.tally = discrepancies
     discrepancy_vc.ballotcount = 0
 
-    return error_bound(discrepancy_vc, winners, margin)
+    return error_bound(discrepancy_vc, winners, margins)
 
 
-def taintfactor(contest, discrepancy, u):
-    """Return the taint factor for a given discrepancy and u in given contest
+def km_factor(contest, discrepancy, u):
+    """Return the KM factor for a given audit's discrepancy and u, in given contest
     TODO: add doctest.
     """
 
-    taint = discrepancy / contest.min_margin / u
+    taint = discrepancy / min(contest.margins.values()) / u
     return (1.0 - (1.0 / contest.U)) / (1.0 - taint)
 
 
@@ -135,19 +155,38 @@ def lindeman_test():
 
     c = types.SimpleNamespace()
 
-    # First need to figure out the minumum margin of all pairs of winners and losers for this contest
-    c.min_margin = 17453
-
     # To calculate U, we need all the batches, not just the selected batches.
     # Take this approximate value from the Lindeman paper
-    # [May be 20.47011975018621 based on all 774 audit units]
     c.U = 20.47
+    # [May be 20.47011975018621 based on old calculation with all 774 audit units]
+    c.U = 20.47011975018621
 
-    c.choices = "Lungren,Durston,Tuma,Padilla".split(",") #  TODO: after fixed to allow more than 2 candidates
-    c.choices = "Lungren,Durston".split(",") # after fixed
-    c.winner = "Lungren"
+    c.choices = "Lungren,Durston,Tuma,Padilla".split(
+        ","
+    )  #  TODO: after fixed to allow more than 2 candidates
+    # c.choices = "Lungren,Durston".split(",")  # after fixed
+    c.winners = ["Lungren"]
 
-    losers = "Durston,Tuma,Padilla".split(",")
+    losers = list(set(c.choices) - set(c.winners))  # no list?
+    print(losers)
+
+    # First need to figure out the minumum margin of all pairs of winners and losers for this contest
+    tally = {"Lungren": 155424, "Durston": 137971, "Tuma": 7273, "Padilla": 13378}
+
+    contest_vc = VoteCounts(
+        "CD3",
+        314046,
+        tally)
+
+    c.margins = {
+        f"{winner}:{loser}": tally[winner] - tally[loser]
+        for winner in c.winners
+        for loser in losers
+    }
+
+    print(c.margins)
+
+    min_margin = min(c.margins.values())
 
     reader = DataclassReader(
         open("ca-cd3-2018-batches.csv"), ContestBatchRow, delimiter=","
@@ -156,7 +195,7 @@ def lindeman_test():
     km_p_value = 1.0
 
     print(
-        f"net_taint,precinct,net_discrepancy,reported_taint,calculated_taint,w_p,max_delta_in_batch"
+        f"precinct,net_taint,net_discrepancy,reported_taint,calculated_taint,w_p,max_delta_in_batch"
     )
 
     for row in reader:
@@ -165,28 +204,42 @@ def lindeman_test():
         # reported_tally = {name: row.__dict__[name] for name in c.choices}
         reported_tally = {name: row.__dict__[name] for name in c.choices}
         reported_votecounts = VoteCounts(row.precinct, row.ballots_cast, reported_tally)
-        audit_tally = {name: row.__dict__["audit_"+name] for name in c.choices}
+        audit_tally = {name: row.__dict__["audit_" + name] for name in c.choices}
         audit_votecounts = VoteCounts(row.precinct, row.ballots_cast, audit_tally)
-        print(reported_tally, audit_tally)
 
-        up = error_bound(reported_votecounts, [c.winner], c.min_margin)
-        ep = relative_error(reported_votecounts, audit_votecounts, [c.winner], c.min_margin)
-        print(f'up: {up}, ep: {ep}, taint: {ep/up}')
+        up = error_bound(reported_votecounts, c.winners, c.margins)
+        ep = relative_error(
+            reported_votecounts, audit_votecounts, c.winners, c.margins
+        )
+        taint = ep / up
+
+        taintcheck = abs(taint - row.taint)
+
+        print(
+            f"p: {row.precinct}, up: {up}, ep: {ep}, taint: {taint}, taintcheck: {taintcheck}"
+        )
 
         w_p = getattr(row, "Lungren")
         max_delta_in_batch = min(w_p - getattr(row, loser) for loser in losers)
-        u = (row.ballots_cast + row.Lungren - row.Durston) / c.min_margin
+        u = (row.ballots_cast + row.Lungren - row.Durston) / min_margin
         d = row.Lungren - row.Durston - (row.audit_Lungren - row.audit_Durston)
-        taint = taintfactor(c, d, u)
-        net_taint = taint ** row.times_drawn
 
-        km_p_value *= net_taint
+        p_value = km_factor(c, d, u)
+        net_p_value = p_value ** row.times_drawn
+
+        km_p_value *= net_p_value
 
         print(
-            f"{net_taint}, {row.precinct}, {d}, {row.taint}, {taint}, {w_p}, {max_delta_in_batch}"
+            f" {row.precinct}, {net_p_value}, {d}, {row.taint}, {taint}, km_factor {p_value}, {w_p}, {max_delta_in_batch}, {km_p_value}"
         )
-
         # print(f'{row.precinct},{row.Lungren},{row.KM_factor*2}')
+
+        if taintcheck > 5e-7:
+            print(
+                f" \n ERROR precinct {row.precinct}: taintcheck {taintcheck} > 10**-6: mine: {taint} vs example: {row.taint}, {row}"
+            )
+        # assert taintcheck < 10**-6, f"precinct {row.precinct}: taintcheck {taintcheck} < 10**-6: {taint}, {row.taint}"
+        print(" " + str(row))
 
     print(f"Overall km_p_value: {km_p_value}")
 
