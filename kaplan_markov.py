@@ -24,7 +24,8 @@ import csv
 import logging
 import types
 import copy
-from typing import Dict
+from collections import OrderedDict
+from typing import Dict, List
 from dataclasses import dataclass
 
 
@@ -35,6 +36,79 @@ class VoteCounts:
     name: str
     ballotcount: int
     tally: Dict[str, int]
+    relative_error: float = float('NaN')
+
+
+@dataclass
+class BatchAudit:
+    name: str
+    numWinners: int
+    batches: Dict[str, VoteCounts]
+    tally: Dict[str, int]
+    winners: List[str]
+    margins: Dict[str, int]
+    total_error_bound: float
+    km_factor: float
+
+    def __init__(self, name, batches, name_key="name", ballotcount_key="N", choice_keys=["A", "B"], numWinners=1, adjustment=0):
+        """Initialize an audit with batches, an iterator of dicts with the given keys.
+        Tally them up, calculate total possible miscount.
+        Add given adjustment to each margin to account for ballots that haven't been tallied yet etc.
+        """
+
+        self.name = name
+        self.numWinners = numWinners
+        self.km_factor = 1.0
+
+        # Take a copy of the data as VoteCounts
+        self.batches = {}
+        for batch in batches:
+            reported_tally = {name: batch[name] for name in choice_keys}
+            self.batches[batch[name_key]] = VoteCounts(batch[name_key], batch[ballotcount_key], reported_tally)
+
+        # Tally contest
+        self.tally = {}
+        for column in choice_keys:  # TODO? add  + [ballotcount_key]
+            self.tally[column] = sum(int(batch.tally[column]) for batch in self.batches.values())
+
+        # Put in order
+        # TODO does this work with ties?
+        sorted_choices = list(OrderedDict(sorted(self.tally.items(), key=lambda vc: vc[1], reverse=True)).keys())
+        self.winners = sorted_choices[:numWinners]
+        losers = sorted_choices[numWinners:]
+
+        # Calculate margins
+        self.margins = {
+            f"{winner}:{loser}": self.tally[winner] - self.tally[loser] + adjustment
+            for winner in self.winners
+            for loser in losers
+        }
+
+        # Error out on a tie
+        if any(margin <= 0 for margin in self.margins.values()):
+            raise ValueError(f"Invalid margin - looks like a tie: {self.margins}")
+
+        # Calculate error bounds
+        self.total_error_bound = 0.0
+        for batch, vc in self.batches.items():
+            vc.relative_error = error_bound(vc, self.winners, self.margins)
+            self.total_error_bound += vc.relative_error
+
+
+    def update(self, true_vcs):
+        "Update the audit with an iterable of true VoteCounts"
+
+        for true_vc in true_vcs:
+            reported_vc = self.batches[true_vc.name]
+            ep = relative_error(reported_vc, true_vc, self.winners, self.margins)
+            taint = ep / reported_vc.relative_error
+            p_value = km_factor(self.total_error_bound, taint)
+            net_p_value = p_value ** 1 # FIXME: reported_vc.multiplicity
+
+            self.km_factor *= net_p_value
+
+    def __str__(self):
+        return f"BatchAudit {self.name}: KM: {self.km_factor}, totals: {self.tally}, margins: {self.margins}, U={self.total_error_bound}, {len(self.batches)} batches"
 
 
 def error_bound(votecounts, winners, margins):
@@ -271,6 +345,16 @@ def test_lindeman():
 
 
 if __name__ == "__main__":
+    tc = BatchAudit("test", [{"name": f"B{n}", "N": 1100, "A": 510, "B": 490} for n in range(100)])
+    print(tc)
+    draws = math.ceil(batch_draws(0.2, tc.total_error_bound))
+    print(draws)
+
+    # Run enough perfect batches to complete audit. Should show that KM is just below risk limit
+    tc.update([VoteCounts(f"B{n}", 1100, {"A": 510, "B": 490}) for n in range(draws)])
+    # tc = BatchAudit("test", [{"name": f"B{n}", "N": 1100, "A": 510, "B": 490} for n in range(3)])
+    print(tc)
+
     # Just run doctests by default
     import doctest
-    doctest.testmod(verbose=True)
+    doctest.testmod(verbose=False)
